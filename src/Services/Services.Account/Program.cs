@@ -8,6 +8,8 @@ using ServiceStack;
 using ServiceStack.OrmLite;
 using ServiceStack.Logging;
 using ServiceStack.Data;
+using ServiceStack.Messaging;
+using ServiceStack.RabbitMq;
 
 namespace Services.Account
 {
@@ -56,27 +58,46 @@ namespace Services.Account
         public override void Configure(Container container)
         {
             var log = LogManager.GetLogger(typeof(AppHost));
+            LogManager.LogFactory = new ConsoleLogFactory(debugEnabled: true);
             
             Plugins.Add(new PostmanFeature());
             Plugins.Add(new CorsFeature());
 
-            SetConfig(new HostConfig
-            {
-                DebugMode = true
-            });
+            SetConfig(new HostConfig { DebugMode = true });
 
-            LogManager.LogFactory = new ConsoleLogFactory(debugEnabled: true);
-
+            // Rabbit
+            var mqServer = new RabbitMqServer("192.168.99.100:5672");
+            mqServer.DisablePriorityQueues = true;
+            mqServer.RegisterHandler<CreateAccount>(this.ExecuteMessage, noOfThreads:4);
+            mqServer.RegisterHandler<DeleteAccount>(this.ExecuteMessage, noOfThreads:4);
+            mqServer.RegisterHandler<DeleteAccounts>(this.ExecuteMessage, noOfThreads:4);
+            mqServer.RegisterHandler<GetAccount>(this.ExecuteMessage, noOfThreads:4);
+            mqServer.RegisterHandler<GetAccounts>(this.ExecuteMessage, noOfThreads:4);
+            mqServer.Start();
+            container.Register<IMessageService>(c => mqServer);
+            
+            // ORMLite
             var dbFactory = new OrmLiteConnectionFactory(":memory:", SqliteDialect.Provider);
             dbFactory.AutoDisposeConnection = false;
             dbFactory.OpenDbConnection().CreateTableIfNotExists<AccountData>();
             container.Register<IDbConnectionFactory>(c => dbFactory);
 
+            // Errors
             this.ServiceExceptionHandlers.Add((httpReq, request, exception) =>
             {
                 log.Error($"Error: {exception.Message}. {exception.StackTrace}.", exception);
                 return null;
             });
+
+            IMessageQueueClient mqClient = mqServer.CreateMessageQueueClient();
+            
+            string replyToMq = mqClient.GetTempQueueName();
+            mqClient.Publish(new Message<CreateAccount>(new CreateAccount { Name = "World" }) { ReplyTo = replyToMq });
+
+            IMessage<CreateAccountResponse> responseMsg = mqClient.Get<CreateAccountResponse>(replyToMq);
+            mqClient.Ack(responseMsg);
+            var response = responseMsg.GetBody();
+            log.Info(response.SerializeToString());
         }
     }
 }

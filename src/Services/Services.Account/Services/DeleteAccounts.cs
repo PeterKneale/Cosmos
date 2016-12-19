@@ -1,4 +1,5 @@
 using ServiceStack;
+using ServiceStack.Messaging;
 using ServiceStack.OrmLite;
 
 namespace Services.Account
@@ -14,11 +15,26 @@ namespace Services.Account
         public string Result { get; set; }
     }
 
+    public class AccountsDeletedEvent
+    {
+    }
+
     public class DeleteAccountsService : Service
     {
+        private readonly IMessageService _messageService;
+
+        public DeleteAccountsService(IMessageService messageService)
+        {
+            _messageService = messageService;
+        }
+
         public DeleteAccountsResponse Delete(DeleteAccounts request)
         {
-            var id = Db.DeleteAll<AccountData>();
+            Db.DeleteAll<AccountData>();
+            using (var mqClient = _messageService.CreateMessageQueueClient())
+            {
+                mqClient.Publish(new AccountsDeletedEvent());
+            }
             return new DeleteAccountsResponse();
         }
     }
