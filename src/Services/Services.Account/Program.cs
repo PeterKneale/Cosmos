@@ -21,7 +21,7 @@ namespace Services.Account
                 .UseKestrel()
                 .UseContentRoot(Directory.GetCurrentDirectory())
                 .UseStartup<Startup>()
-                .UseUrls("http://localhost:8080/")
+                .UseUrls("http://127.0.0.1:8081/")
                 .Build();
 
             host.Run();
@@ -59,23 +59,29 @@ namespace Services.Account
         {
             var log = LogManager.GetLogger(typeof(AppHost));
             LogManager.LogFactory = new ConsoleLogFactory(debugEnabled: true);
-            
+
             Plugins.Add(new PostmanFeature());
             Plugins.Add(new CorsFeature());
 
             SetConfig(new HostConfig { DebugMode = true });
 
             // Rabbit
-            var mqServer = new RabbitMqServer("192.168.99.100:5672");
+            var mqServer = new RabbitMqServer("192.168.99.100:32776");
             mqServer.DisablePriorityQueues = true;
-            mqServer.RegisterHandler<CreateAccount>(this.ExecuteMessage, noOfThreads:4);
-            mqServer.RegisterHandler<DeleteAccount>(this.ExecuteMessage, noOfThreads:4);
-            mqServer.RegisterHandler<DeleteAccounts>(this.ExecuteMessage, noOfThreads:4);
-            mqServer.RegisterHandler<GetAccount>(this.ExecuteMessage, noOfThreads:4);
-            mqServer.RegisterHandler<GetAccounts>(this.ExecuteMessage, noOfThreads:4);
+            mqServer.RegisterHandler<CreateAccount>(this.ExecuteMessage, noOfThreads: 4);
+            mqServer.RegisterHandler<DeleteAccount>(this.ExecuteMessage, noOfThreads: 4);
+            mqServer.RegisterHandler<DeleteAccounts>(this.ExecuteMessage, noOfThreads: 4);
+            mqServer.RegisterHandler<GetAccount>(this.ExecuteMessage, noOfThreads: 4);
+            mqServer.RegisterHandler<GetAccounts>(this.ExecuteMessage, noOfThreads: 4);
+            mqServer.RegisterHandler<AccountCreatedEvent>(x => {
+                log.Info($"an event occurred! {x.SerializeToString()}");
+                return null;
+            });
+            
             mqServer.Start();
             container.Register<IMessageService>(c => mqServer);
-            
+            container.RegisterAs<Bus, IBus>().ReusedWithin(ReuseScope.None);
+
             // ORMLite
             var dbFactory = new OrmLiteConnectionFactory(":memory:", SqliteDialect.Provider);
             dbFactory.AutoDisposeConnection = false;
@@ -89,15 +95,59 @@ namespace Services.Account
                 return null;
             });
 
-            IMessageQueueClient mqClient = mqServer.CreateMessageQueueClient();
+            var bus = container.Resolve<IBus>();
+            bus.Send<CreateAccount, CreateAccountResponse>(new CreateAccount{Name="Peter"});
+            bus.Send<CreateAccount, CreateAccountResponse>(new CreateAccount{Name="Peter"});
+            bus.Send<CreateAccount, CreateAccountResponse>(new CreateAccount{Name="Peter"});
+            bus.Send<CreateAccount, CreateAccountResponse>(new CreateAccount{Name="Peter"});
+            bus.Send<CreateAccount, CreateAccountResponse>(new CreateAccount{Name="Peter"});
+            bus.Send<CreateAccount, CreateAccountResponse>(new CreateAccount{Name="Peter"});
+            bus.Send<CreateAccount, CreateAccountResponse>(new CreateAccount{Name="Peter"});
+            bus.Send<CreateAccount, CreateAccountResponse>(new CreateAccount{Name="Peter"});
+            bus.Send<CreateAccount, CreateAccountResponse>(new CreateAccount{Name="Peter"});
+            bus.Send<CreateAccount, CreateAccountResponse>(new CreateAccount{Name="Peter"});
+            bus.Send<CreateAccount, CreateAccountResponse>(new CreateAccount{Name="Peter"});
+            bus.Send<CreateAccount, CreateAccountResponse>(new CreateAccount{Name="Peter"});
             
-            string replyToMq = mqClient.GetTempQueueName();
-            mqClient.Publish(new Message<CreateAccount>(new CreateAccount { Name = "World" }) { ReplyTo = replyToMq });
+        }
 
-            IMessage<CreateAccountResponse> responseMsg = mqClient.Get<CreateAccountResponse>(replyToMq);
-            mqClient.Ack(responseMsg);
-            var response = responseMsg.GetBody();
-            log.Info(response.SerializeToString());
+    }
+
+    public interface IBus
+    {
+        void Publish<TEvent>(TEvent message);
+        TResponse Send<TRequest, TResponse>(TRequest request);
+    }
+
+    public class Bus : IBus
+    {
+        private ILog _log = LogManager.GetLogger(typeof(Bus));
+        private readonly IMessageQueueClient _mqClient;
+        private readonly IMessageProducer _mqProducer;
+        public Bus(IMessageService messageService)
+        {
+            _mqClient = messageService.CreateMessageQueueClient();
+            _mqProducer = messageService.CreateMessageProducer();
+        }
+
+        public void Publish<TEvent>(TEvent message)
+        {
+            _log.Info($"publishing {message.SerializeToString()}");
+            _mqProducer.Publish<TEvent>(message);
+        }
+
+        public TResponse Send<TRequest, TResponse>(TRequest request)
+        {
+            _log.Info($"Sending {request.SerializeToString()}");
+            var queue = _mqClient.GetTempQueueName();
+            
+            _log.Info($"to queue {queue}");
+            _mqClient.Publish(new Message<TRequest>(request) { ReplyTo = queue });
+
+            var response = _mqClient.Get<TResponse>(queue);
+            _log.Info($" got response {response.SerializeToString()}");
+            _mqClient.Ack(response);
+            return response.GetBody();
         }
     }
 }
